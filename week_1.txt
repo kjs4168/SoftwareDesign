@@ -1,0 +1,19 @@
+압타머
+
+모티프 rna motiff
+
+fasta & fastq file
+
+machine learning
+
+탐색적 자료 분석(EDA)
+
+할 수 있는 EDA
+( 위치별 퀄리티 스코어의 분포, Motif 별 빈도, Letter 별 빈도)
+
+데이터 전처리
+(데이터 품질 향상, 데이터 통일, 개인정보 보호)
+
+data transformation
+
+letter -> one-hot vector

@@ -1,0 +1,283 @@
+
+#include "stm32f10x.h"
+#include "misc.h"
+#include "stm32f10x_gpio.h"
+#include "stm32f10x_usart.h"
+#include "stm32f10x_rcc.h"
+
+#include "bluetooth.h"
+#include "queue.h"
+//#include "lightsensor.h"
+#include "myServo.h"
+#include "FSRsensor.h"
+#include "lcd.h"
+#include "touch.h"
+
+#define ISDEBUGGING 1
+#define START_RECIEVE_SIGNAL 's'
+#define END_SEND_SIGNAL 'e'
+#define JODO_THRESHOLD 1000//2700
+#define LIGHT_SENSOR_ENABLE 1
+#define INIT_DELAY_TIME 20
+#define CONSECUTIVE_MAX 30
+#define MoterMIN 1300
+#define MoterMAX 1900
+
+
+#define DEBUG_ANGLE_RATE 1.0
+
+volatile unsigned int Timer2_Counter=0;
+Queue queue;
+
+typedef struct _GameStatue {
+	int isGaming;
+} GameStatue;
+
+typedef struct _GyroInfo {
+	char x;
+	char y;
+	int status;
+} GyroInfo;
+
+GameStatue gameStatus;
+GyroInfo beforeGyroInfo;
+GyroInfo currentGyroInfo;
+int gyroValue;
+int consecutiveActivateTimes = 0;
+
+//void ledonoff(int index, int on);
+
+
+
+/* ======================================================= */
+/* ================== configurate stm32 ================== */
+/* ======================================================= */
+void ledonoff(int index, int on) {
+	GPIO_ResetBits(GPIOD, GPIO_Pin_2);
+	GPIO_ResetBits(GPIOD, GPIO_Pin_3);
+	GPIO_ResetBits(GPIOD, GPIO_Pin_4);
+	GPIO_ResetBits(GPIOD, GPIO_Pin_7);
+
+	if (on == 1) {
+			if (index == 0) {
+			GPIO_SetBits(GPIOD, GPIO_Pin_2);
+		} else if (index == 1) {
+			GPIO_SetBits(GPIOD, GPIO_Pin_3);
+		} else if (index == 2) {
+			GPIO_SetBits(GPIOD, GPIO_Pin_4);
+		} else if (index == 3) {
+			GPIO_SetBits(GPIOD, GPIO_Pin_7);
+		} else {
+
+		}
+	}
+	if (on == 0) {
+		if (index == 0) {
+			GPIO_ResetBits(GPIOD, GPIO_Pin_2);
+		} else if (index == 1) {
+			GPIO_ResetBits(GPIOD, GPIO_Pin_3);
+		} else if (index == 2) {
+			GPIO_ResetBits(GPIOD, GPIO_Pin_4);
+		} else if (index == 3) {
+			GPIO_ResetBits(GPIOD, GPIO_Pin_7);
+		} else {
+
+		}
+	}
+}
+
+/* ======================================================= */
+/* ================== interrupt handler ================== */
+/* ======================================================= */
+void USART1_IRQHandler() { // ????? ????? ??½?
+	if (USART_GetITStatus(USART1,USART_IT_RXNE)!=RESET) {
+		char data;
+		Task task;
+		data = USART_ReceiveData(USART1);
+		task.data = data;
+		task.usartType = 1;
+		queue_push(&queue, task);
+	}
+
+	USART_ClearITPendingBit(USART1, USART_IT_RXNE);
+}
+
+void USART2_IRQHandler() { // ???????? ??½?
+	if (USART_GetITStatus(USART2,USART_IT_RXNE)!=RESET) {
+		char data;
+		Task task;
+		data = USART_ReceiveData(USART2);
+		task.data = data;
+		task.usartType = 2;
+		queue_push(&queue, task);
+	   //USART_SendData(USART1,data);
+	}
+	USART_ClearITPendingBit(USART2, USART_IT_RXNE);
+}
+
+
+// interrupt callback handler
+void TIM2_IRQHandler(void) {
+    if(TIM_GetITStatus(TIM2,TIM_IT_Update) != RESET) {
+        // Clear the interrupt flag
+        TIM_ClearITPendingBit(TIM2, TIM_IT_Update);
+        Timer2_Counter++;
+        GPIOB->BRR = GPIO_Pin_0;  // PB0 OFF
+    }
+
+    if(TIM_GetITStatus(TIM2,TIM_IT_CC1) != RESET) {
+        TIM_ClearITPendingBit(TIM2,TIM_IT_CC1);
+        GPIOB->BSRR = GPIO_Pin_0;  // PB0 ON
+    }
+}
+
+// my functions
+void delay(unsigned int del) {
+    Timer2_Counter=0;
+    while(Timer2_Counter < del);
+}
+
+/* ========================================== */
+/* ================== game ================== */
+/* ========================================== */
+void Init_Game() {
+	gameStatus.isGaming = 0;
+	//ledonoff(0, 1);
+}
+
+void start_Game() {
+	if (gameStatus.isGaming!=1) {
+		gameStatus.isGaming = 1;
+		setServo3(80);
+		//ledonoff(1, 1);
+		//ledonoff(2, 1);
+	}
+}
+
+//From now on, if ADC_Value[0] < 2500 then turn on led 1, else turn led 3
+void end_Game(){
+	if (gameStatus.isGaming != 0) {
+		USART_SendData(USART2, END_SEND_SIGNAL);
+		gameStatus.isGaming = 0;
+		setServo3(180);
+
+
+		setServo1(((90-90)*DEBUG_ANGLE_RATE)+90 + 16);
+		setServo2(((90-90)*DEBUG_ANGLE_RATE)+90 - 11);
+		//ledonoff(0, 1);
+	}
+}
+
+
+void Set_QueueInit() {
+	queue.tail = 0;
+	queue.head = 0;
+	queue.overflow = 0;
+}
+
+
+/* ========================================== */
+/* ========================================== */
+/* ========================================== */
+/* ========================================== */
+/* ========================================== */
+int main(){
+	int i=0;
+	unsigned int puttydelay = 10;
+	int num = 10;
+	int counting = 0;
+        FSR_Init();
+	SystemInit();
+	//LT_Init();
+	BT_Init();
+	Set_QueueInit();
+	LCD_Init();
+	LCD_Clear(WHITE);
+        Motor_Init();
+
+	LCD_ShowString(50, 40, "READY:", BLACK, WHITE);
+
+	delay(INIT_DELAY_TIME);
+
+	//ledonoff(0, 1);
+
+	LCD_ShowString(50, 40, "START:", BLACK, WHITE);
+
+	Init_Game();
+
+	while(1){
+
+
+		//LCD_ShowNum(50,100, LT_Get_LightValue(), 5, BLACK,WHITE); // ?????? ???
+		//LCD_ShowNum(50,120,ADC_Value[1],5,BLACK,WHITE);
+
+		if (isEmpty(&queue) == false) {
+			Task task;
+			queue_pop(&queue, &task);
+			if (task.usartType == 1) { // from putty
+				while(USART_GetFlagStatus(USART2, USART_FLAG_TXE) == RESET);
+				USART_SendData(USART2, task.data);
+
+				LCD_ShowString(150, 180, "USART2():", BLACK, WHITE);
+				LCD_ShowNum(150, 200, task.data, 5, BLACK, WHITE);
+
+			} else if (task.usartType == 2) { // from bluetooth
+
+				if (gameStatus.isGaming == 0) { // waiting for starting game
+					while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+					USART_SendData(USART1, task.data);
+
+					if (task.data == START_RECIEVE_SIGNAL) {
+						start_Game();
+					}
+				} else { // now playing game
+					while(USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
+					USART_SendData(USART1, task.data);
+
+					if (task.data == '1') { // y
+						currentGyroInfo.y = gyroValue;
+					} else if (task.data == '0') { // x
+						currentGyroInfo.x = gyroValue;
+					} else {
+						gyroValue = task.data;
+					}
+
+					if (task.data == '1') {
+						beforeGyroInfo = currentGyroInfo;
+						beforeGyroInfo.status = 1;
+						currentGyroInfo.x = 0;
+						currentGyroInfo.y = 0;
+						currentGyroInfo.status = 0;
+                                                int pulse = GET_FSR_Value();
+
+						counting ++;
+                                                if((beforeGyroInfo.x >= 71 && beforeGyroInfo.x <= 109)){
+                                                  setMotor1(map(beforeGyroInfo.x, 71, 109, MoterMIN, MoterMAX));
+                                                }
+                                                if(pulse >= 0 && pulse <= 4085)
+                                                  setMotor2(map(pulse, 0, 4085, MoterMIN, MoterMAX));
+  
+						//setServo1(((beforeGyroInfo.x-90)*DEBUG_ANGLE_RATE)+90 + 16);
+						//setServo2(((beforeGyroInfo.y-90)*DEBUG_ANGLE_RATE)+90 - 11);
+						//LCD_ShowString(150, 80, "GYRO():", BLACK, WHITE);
+						//LCD_ShowNum(150, 100, beforeGyroInfo.x, 5, BLACK, WHITE);
+						//LCD_ShowNum(150, 120, beforeGyroInfo.y, 5, BLACK, WHITE);
+					} else if (task.data == '2') { // end game signal from mobile device
+						end_Game();
+					}
+				}
+			}
+		}
+
+		if(gameStatus.isGaming == 1 && GET_JODO_Value() < JODO_THRESHOLD){ //&& LIGHT_SENSOR_ENABLE){
+			consecutiveActivateTimes++;
+			LCD_ShowNum(50,150,GET_JODO_Value(),5,BLACK,WHITE);
+		} else {
+			consecutiveActivateTimes = 0;
+		}
+		if (gameStatus.isGaming == 1 && consecutiveActivateTimes > CONSECUTIVE_MAX) {
+			end_Game();
+		}
+	}
+	return 0;
+}
